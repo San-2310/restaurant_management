@@ -1,0 +1,32 @@
+name: Firebase Configuration Generator
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform (android/ios)'
+        required: true
+        default: 'android'
+
+jobs:
+  generate-firebase-config:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Set up Firebase CLI
+        run: npm install -g firebase-tools
+      
+      - name: Generate Firebase configuration
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+        run: |
+          if [[ "${{ github.event.inputs.platform }}" == "android" ]]; then
+            firebase apps:sdkconfig android --project YOUR_FIREBASE_PROJECT_ID > lib/firebase_options.dart
+          elif [[ "${{ github.event.inputs.platform }}" == "ios" ]]; then
+            firebase apps:sdkconfig ios --project YOUR_FIREBASE_PROJECT_ID > ios/Runner/firebase_options.dart
+          else
+            echo "Invalid platform selected"
+            exit 1
+          fi
