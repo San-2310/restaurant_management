@@ -1,0 +1,221 @@
+name: Flutter CI/CD
+
+# Controls when the workflow will run
+on:
+  # Triggers the workflow on push events for the main branch and pull requests
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+# Environment variables
+env:
+  FLUTTER_VERSION: "3.16.0"
+  JAVA_VERSION: "11.x"
+
+jobs:
+  # Lint and analyze the code
+  analyze:
+    name: Analyze Code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Java
+        uses: actions/setup-java@v2
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'adopt'
+      
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+      
+      - name: Install dependencies
+        run: flutter pub get
+      
+      - name: Run analyzer
+        run: flutter analyze
+      
+      - name: Format code check
+        run: dart format --output=none --set-exit-if-changed .
+
+  # Run unit and widget tests
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    needs: analyze
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Java
+        uses: actions/setup-java@v2
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'adopt'
+      
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+      
+      - name: Install dependencies
+        run: flutter pub get
+      
+      - name: Run unit tests
+        run: flutter test test/unit
+      
+      - name: Run widget tests
+        run: flutter test test/widget
+
+  # Build Android app
+  build-android:
+    name: Build Android App
+    runs-on: ubuntu-latest
+    needs: [analyze, test]
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Java
+        uses: actions/setup-java@v2
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'adopt'
+      
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+      
+      # Create Firebase configuration files
+      - name: Create Firebase configuration
+        env:
+          FIREBASE_OPTIONS: ${{ secrets.FIREBASE_OPTIONS_DART }}
+        run: |
+          echo "$FIREBASE_OPTIONS" > lib/firebase_options.dart
+      
+      - name: Create upload keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 --decode > upload-keystore.jks
+      
+      - name: Create key.properties
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          echo "storeFile=upload-keystore.jks" > android/key.properties
+          echo "storePassword=$KEYSTORE_PASSWORD" >> android/key.properties
+          echo "keyAlias=$KEY_ALIAS" >> android/key.properties
+          echo "keyPassword=$KEY_PASSWORD" >> android/key.properties
+      
+      - name: Build Android app
+        run: flutter build apk --release
+      
+      - name: Upload Android artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: restaurant-management-android
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+  # Build iOS app
+  build-ios:
+    name: Build iOS App
+    runs-on: macos-latest
+    needs: [analyze, test]
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+      
+      # Create Firebase configuration files
+      - name: Create Firebase configuration
+        env:
+          FIREBASE_OPTIONS: ${{ secrets.FIREBASE_OPTIONS_DART }}
+        run: |
+          echo "$FIREBASE_OPTIONS" > lib/firebase_options.dart
+      
+      - name: Build iOS app
+        run: |
+          flutter build ios --release --no-codesign
+      
+      - name: Upload iOS artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: restaurant-management-ios
+          path: build/ios/iphoneos/Runner.app
+
+  # Deploy to Firebase App Distribution (optional)
+  deploy-beta:
+    name: Deploy Beta to Firebase
+    runs-on: ubuntu-latest
+    needs: [build-android]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Download Android artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: restaurant-management-android
+      
+      - name: Upload to Firebase App Distribution
+        uses: wzieba/Firebase-Distribution-Github-Action@v1
+        with:
+          appId: ${{ secrets.FIREBASE_APP_ID }}
+          token: ${{ secrets.FIREBASE_TOKEN }}
+          groups: testers
+          file: app-release.apk
+
+  # Optional deployment to Google Play Store
+  deploy-play-store:
+    name: Deploy to Google Play Store
+    runs-on: ubuntu-latest
+    needs: [build-android]
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Download Android artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: restaurant-management-android
+      
+      - name: Deploy to Play Store
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT }}
+          packageName: com.example.restaurant_management
+          releaseFiles: app-release.apk
+          track: production
+          
+  # Optional deployment to App Store
+  deploy-app-store:
+    name: Deploy to App Store
+    runs-on: macos-latest
+    needs: [build-ios]
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Download iOS artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: restaurant-management-ios
+      
+      - name: Deploy to App Store
+        uses: Apple-Actions/upload-testflight-build@v1
+        with:
+          app-path: Runner.app
+          issuer-id: ${{ secrets.APPSTORE_ISSUER_ID }}
+          api-key-id: ${{ secrets.APPSTORE_KEY_ID }}
+          api-private-key: ${{ secrets.APPSTORE_PRIVATE_KEY }}
